@@ -29,6 +29,7 @@ import { traceCommand } from "./commands/trace.js";
 import { fetchCommand } from "./commands/fetch.js";
 import { siteCommand } from "./commands/site.js";
 import { historyCommand } from "./commands/history.js";
+import { borderCommand } from "./commands/border.js";
 import { statusCommand } from "./commands/daemon.js";
 import { setJqExpression } from "./client.js";
 
@@ -61,6 +62,7 @@ bb-browser - AI Agent 浏览器自动化工具
 
 浏览器操作：
   open <url> [--tab]           打开 URL
+  border <url> [--tab]         打开 URL 并为所有元素加上边框
   snapshot [-i] [-c] [-d <n>]  获取页面快照
   click <ref>                  点击元素
   hover <ref>                  悬停元素
@@ -629,6 +631,14 @@ async function main(): Promise<void> {
           tabId: globalTabId,
           openclaw: parsed.flags.openclaw,
         });
+        break;
+      }
+
+      case "border": {
+        const borderUrl = parsed.args[0];
+        const borderTabIndex = process.argv.findIndex(a => a === "--tab");
+        const borderTab = borderTabIndex >= 0 ? process.argv[borderTabIndex + 1] : undefined;
+        await borderCommand(borderUrl, { json: parsed.flags.json, tab: borderTab });
         break;
       }
 
