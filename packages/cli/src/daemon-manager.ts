@@ -42,7 +42,7 @@ function httpJson<T>(
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
     const req = httpRequest(
       {
-        hostname: "127.0.0.1",
+        hostname: "localhost",
         port: DAEMON_PORT,
         path: urlPath,
         method,
@@ -151,8 +151,8 @@ export async function ensureDaemon(): Promise<void> {
   });
   child.unref();
 
-  // Wait for daemon to become healthy (up to 5 seconds)
-  const deadline = Date.now() + 5000;
+  // Wait for daemon to become healthy (up to 15 seconds — daemon may need to launch Chrome)
+  const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 200));
     // Re-read token each iteration (daemon writes it on startup)
