@@ -10,6 +10,7 @@
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { TabStateManager } from "./tab-state.js";
+import { loadSiteScriptsConfig, matchUrl, loadUserScript } from "./site-scripts.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,6 +99,9 @@ export class CdpConnection {
 
   /** Resolvers for commands queued before CDP is ready. */
   private readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+
+  /** Per-tab debounce timers for site-script injection. */
+  private injectionDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(host: string, port: number, tabManager: TabStateManager) {
     this.host = host;
@@ -318,6 +322,37 @@ export class CdpConnection {
       return;
     }
 
+    // Navigation events — site-script auto-injection
+    if (method === "Page.frameNavigated") {
+      const frame = params.frame as JsonObject | undefined;
+      if (!frame) return;
+      // Only process main frame navigations (no parentId)
+      if (frame.parentId) return;
+      const url = typeof frame.url === "string" ? frame.url : "";
+      if (url) {
+        tab.pendingNavigationUrl = url;
+      }
+      return;
+    }
+
+    if (method === "Page.domContentEventFired") {
+      const url = tab.pendingNavigationUrl;
+      if (url) {
+        tab.pendingNavigationUrl = null;
+        this.scheduleSiteScriptInjection(targetId, url);
+      }
+      return;
+    }
+
+    if (method === "Page.navigatedWithinDocument") {
+      // SPA pushState/replaceState — DOM is already ready
+      const url = typeof params.url === "string" ? params.url : "";
+      if (url) {
+        this.scheduleSiteScriptInjection(targetId, url);
+      }
+      return;
+    }
+
     // Network events
     if (method === "Network.requestWillBeSent") {
       const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
@@ -428,6 +463,47 @@ export class CdpConnection {
             : undefined,
         timestamp: Date.now(),
       });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Site-script auto-injection
+  // ---------------------------------------------------------------------------
+
+  /** Schedule site-script injection with debounce to handle redirect chains. */
+  private scheduleSiteScriptInjection(targetId: string, url: string): void {
+    const existing = this.injectionDebounce.get(targetId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.injectionDebounce.delete(targetId);
+      this.injectSiteScripts(targetId, url).catch(() => {
+        // Silently ignore — tab may have been destroyed
+      });
+    }, 100);
+    this.injectionDebounce.set(targetId, timer);
+  }
+
+  /** Load site-scripts config, match URL, and inject any matching scripts. */
+  private async injectSiteScripts(targetId: string, url: string): Promise<void> {
+    const config = loadSiteScriptsConfig();
+    const rule = matchUrl(url, config);
+    if (!rule) return;
+
+    // Bind tab for reuse if configured
+    if (rule.reuseTab) {
+      this.tabManager.bindSiteTab(rule.match, targetId);
+    }
+
+    // Inject each script
+    for (const scriptName of rule.scripts) {
+      try {
+        const script = loadUserScript(scriptName);
+        const expression = `(() => { ${script} })()`;
+        await this.evaluate(targetId, expression);
+      } catch {
+        // Script load or injection failure — log but don't break
+      }
     }
   }
 

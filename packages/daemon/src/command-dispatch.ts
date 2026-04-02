@@ -18,6 +18,7 @@ import type {
   TraceStatus,
 } from "@bb-browser/shared";
 import { CdpConnection, type CdpTargetInfo } from "./cdp-connection.js";
+import { loadSiteScriptsConfig, matchUrl } from "./site-scripts.js";
 import type { TabState } from "./tab-state.js";
 
 // ---------------------------------------------------------------------------
@@ -545,13 +546,38 @@ export async function dispatchRequest(
       if (!request.url) return fail(request.id, "Missing url parameter");
       const seq = tab.recordAction();
       if (tabRef === undefined) {
-        // No specific tab requested — open in new tab
+        // Check site-scripts config for tab reuse
+        const siteConfig = loadSiteScriptsConfig();
+        const siteRule = matchUrl(request.url, siteConfig);
+        if (siteRule?.reuseTab) {
+          const boundTargetId = cdp.tabManager.getSiteTab(siteRule.match);
+          if (boundTargetId && cdp.hasSession(boundTargetId)) {
+            // Reuse the existing site-bound tab
+            await cdp.pageCommand(boundTargetId, "Page.navigate", { url: request.url });
+            const boundTab = cdp.tabManager.getTab(boundTargetId);
+            if (boundTab) boundTab.refs = {};
+            return ok(request.id, {
+              url: request.url,
+              tabId: boundTargetId,
+              tab: boundTab?.shortId ?? shortId,
+              seq,
+            });
+          }
+        }
+
+        // No site-bound tab found — open in new tab
         const created = await cdp.browserCommand<{ targetId: string }>(
           "Target.createTarget",
           { url: request.url, background: true },
         );
         const newTarget = await cdp.ensurePageTarget(created.targetId);
         const newTab = cdp.tabManager.getTab(newTarget.id);
+
+        // Bind the new tab if a reuseTab rule matched
+        if (siteRule?.reuseTab) {
+          cdp.tabManager.bindSiteTab(siteRule.match, newTarget.id);
+        }
+
         return ok(request.id, {
           url: request.url,
           tabId: newTarget.id,

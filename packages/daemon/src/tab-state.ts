@@ -58,6 +58,9 @@ export class TabState {
   /** Dialog auto-handler config. */
   dialogHandler: { accept: boolean; promptText?: string } | null = null;
 
+  /** URL from the most recent Page.frameNavigated, awaiting domContentEventFired to trigger injection. */
+  pendingNavigationUrl: string | null = null;
+
   constructor(
     targetId: string,
     shortId: string,
@@ -266,6 +269,9 @@ export class TabStateManager {
   private shortToTarget = new Map<string, string>(); // shortId -> targetId
   private targetToShort = new Map<string, string>(); // targetId -> shortId
 
+  /** Site pattern → targetId mapping for tab reuse. */
+  private siteTabMap = new Map<string, string>();
+
   /** Generate a globally unique short ID for a target. */
   private generateShortId(targetId: string): string {
     for (let len = 4; len <= targetId.length; len++) {
@@ -308,6 +314,28 @@ export class TabStateManager {
     this.shortToTarget.delete(tab.shortId);
     this.targetToShort.delete(targetId);
     this.tabs.delete(targetId);
+    this.unbindSiteTab(targetId);
+  }
+
+  // --------------- Site-tab binding ---------------
+
+  /** Associate a site pattern with a specific tab for reuse. */
+  bindSiteTab(pattern: string, targetId: string): void {
+    this.siteTabMap.set(pattern, targetId);
+  }
+
+  /** Get the targetId bound to a site pattern. */
+  getSiteTab(pattern: string): string | undefined {
+    return this.siteTabMap.get(pattern);
+  }
+
+  /** Remove any site binding that references the given targetId. */
+  unbindSiteTab(targetId: string): void {
+    for (const [pattern, tid] of this.siteTabMap) {
+      if (tid === targetId) {
+        this.siteTabMap.delete(pattern);
+      }
+    }
   }
 
   /** Get tab by targetId. */
