@@ -20,6 +20,8 @@ export interface SiteScriptRule {
   scripts: string[];
   /** Whether to reuse the same tab for this site pattern */
   reuseTab: boolean;
+  /** Auto-refresh interval in milliseconds (0 or omitted = disabled). */
+  refreshInterval?: number;
 }
 
 export interface SiteScriptsConfig {
@@ -67,14 +69,22 @@ export function loadSiteScriptsConfig(): SiteScriptsConfig {
       cachedConfig = { sites: [] };
     } else {
       cachedConfig = {
-        sites: parsed.sites.filter(
-          (s: unknown): s is SiteScriptRule =>
-            typeof s === "object" &&
-            s !== null &&
-            typeof (s as SiteScriptRule).match === "string" &&
-            Array.isArray((s as SiteScriptRule).scripts) &&
-            typeof (s as SiteScriptRule).reuseTab === "boolean",
-        ),
+        sites: parsed.sites
+          .filter(
+            (s: unknown): s is SiteScriptRule =>
+              typeof s === "object" &&
+              s !== null &&
+              typeof (s as SiteScriptRule).match === "string" &&
+              Array.isArray((s as SiteScriptRule).scripts) &&
+              typeof (s as SiteScriptRule).reuseTab === "boolean",
+          )
+          .map((s: SiteScriptRule) => ({
+            ...s,
+            refreshInterval:
+              typeof s.refreshInterval === "number" && s.refreshInterval > 0
+                ? s.refreshInterval
+                : undefined,
+          })),
       };
     }
     cachedConfigMtime = mtime;

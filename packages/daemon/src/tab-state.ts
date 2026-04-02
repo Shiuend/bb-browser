@@ -64,6 +64,9 @@ export class TabState {
   /** URL for which site scripts were last injected — prevents double injection within the same page load. */
   lastInjectedUrl: string | null = null;
 
+  /** loaderId from the most recent Page.frameNavigated — used to detect true page reloads vs duplicate events. */
+  lastLoaderId: string | null = null;
+
   constructor(
     targetId: string,
     shortId: string,

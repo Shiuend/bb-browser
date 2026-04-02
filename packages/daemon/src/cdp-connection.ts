@@ -103,6 +103,9 @@ export class CdpConnection {
   /** Per-tab debounce timers for site-script injection. */
   private injectionDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /** Per-tab auto-refresh timers (setTimeout-chained). */
+  private refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(host: string, port: number, tabManager: TabStateManager) {
     this.host = host;
     this.port = port;
@@ -175,6 +178,8 @@ export class CdpConnection {
 
   /** Gracefully close the CDP connection. */
   disconnect(): void {
+    this.stopAllAutoRefresh();
+
     if (this.socket) {
       try {
         this.socket.close();
@@ -263,6 +268,7 @@ export class CdpConnection {
         const params = message.params as JsonObject;
         const targetId = params.targetId;
         if (typeof targetId === "string") {
+          this.stopAutoRefresh(targetId);
           const sessionId = this.sessions.get(targetId);
           if (sessionId) {
             this.sessions.delete(targetId);
@@ -329,14 +335,20 @@ export class CdpConnection {
       // Only process main frame navigations (no parentId)
       if (frame.parentId) return;
       const url = typeof frame.url === "string" ? frame.url : "";
+      const loaderId = typeof frame.loaderId === "string" ? frame.loaderId : null;
       if (url) {
         tab.pendingNavigationUrl = url;
-        // Only clear the injection guard when navigating to a different URL,
-        // so multiple frameNavigated events for the same URL (e.g. Turbo restores,
-        // same-URL redirects) don't bypass the dedup check.
-        if (url !== tab.lastInjectedUrl) {
+        // Clear the injection guard when:
+        // 1. Navigating to a different URL, OR
+        // 2. Same URL but a new loaderId (real page reload — e.g. user pressed F5)
+        // This preserves dedup for duplicate frameNavigated events within the
+        // same navigation (e.g. Turbo restores) while allowing re-injection
+        // after genuine full-page reloads that wipe the JS context.
+        const isNewLoad = loaderId !== null && loaderId !== tab.lastLoaderId;
+        if (url !== tab.lastInjectedUrl || isNewLoad) {
           tab.lastInjectedUrl = null;
         }
+        tab.lastLoaderId = loaderId;
       }
       return;
     }
@@ -493,11 +505,18 @@ export class CdpConnection {
   /** Load site-scripts config, match URL, and inject any matching scripts. */
   private async injectSiteScripts(targetId: string, url: string): Promise<void> {
     const tab = this.tabManager.getTab(targetId);
-    if (tab?.lastInjectedUrl === url) return;
+    if (tab?.lastInjectedUrl === url) {
+      console.log(`[auto-refresh] skip inject (same URL): ${url}`);
+      return;
+    }
 
     const config = loadSiteScriptsConfig();
     const rule = matchUrl(url, config);
-    if (!rule) return;
+    if (!rule) {
+      console.log(`[auto-refresh] no matching rule for: ${url}`);
+      this.stopAutoRefresh(targetId);
+      return;
+    }
 
     // Bind tab for reuse if configured
     if (rule.reuseTab) {
@@ -517,6 +536,56 @@ export class CdpConnection {
         // Script load or injection failure — log but don't break
       }
     }
+
+    // Schedule auto-refresh if configured (chained setTimeout)
+    if (rule.refreshInterval && rule.refreshInterval > 0) {
+      console.log(`[auto-refresh] scheduling ${rule.refreshInterval}ms for: ${url}`);
+      this.scheduleAutoRefresh(targetId, rule.refreshInterval);
+    } else {
+      this.stopAutoRefresh(targetId);
+    }
+  }
+
+  /**
+   * Schedule the next auto-refresh for a tab after `intervalMs`.
+   * Uses chained setTimeout (not setInterval) so the next reload only
+   * fires after the current page has fully loaded and scripts injected.
+   */
+  private scheduleAutoRefresh(targetId: string, intervalMs: number): void {
+    this.stopAutoRefresh(targetId);
+    const timer = setTimeout(async () => {
+      this.refreshTimers.delete(targetId);
+      try {
+        // Clear the injection guard so scripts re-inject on the same URL
+        const tab = this.tabManager.getTab(targetId);
+        if (tab) tab.lastInjectedUrl = null;
+        console.log(`[auto-refresh] firing Page.reload for ${targetId}`);
+        await this.sessionCommand(targetId, "Page.reload", { ignoreCache: false });
+        // After reload, Page.domContentEventFired will fire,
+        // which triggers injectSiteScripts, which calls scheduleAutoRefresh again.
+      } catch (err) {
+        console.log(`[auto-refresh] reload failed for ${targetId}:`, err);
+        // Tab was destroyed or CDP disconnected — stop the chain
+      }
+    }, intervalMs);
+    this.refreshTimers.set(targetId, timer);
+  }
+
+  /** Cancel a pending auto-refresh timer for a tab. */
+  private stopAutoRefresh(targetId: string): void {
+    const timer = this.refreshTimers.get(targetId);
+    if (timer) {
+      clearTimeout(timer);
+      this.refreshTimers.delete(targetId);
+    }
+  }
+
+  /** Cancel all pending auto-refresh timers. */
+  private stopAllAutoRefresh(): void {
+    for (const timer of this.refreshTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.refreshTimers.clear();
   }
 
   // ---------------------------------------------------------------------------
