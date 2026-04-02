@@ -61,6 +61,9 @@ export class TabState {
   /** URL from the most recent Page.frameNavigated, awaiting domContentEventFired to trigger injection. */
   pendingNavigationUrl: string | null = null;
 
+  /** URL for which site scripts were last injected — prevents double injection within the same page load. */
+  lastInjectedUrl: string | null = null;
+
   constructor(
     targetId: string,
     shortId: string,

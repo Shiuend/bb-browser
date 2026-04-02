@@ -331,6 +331,12 @@ export class CdpConnection {
       const url = typeof frame.url === "string" ? frame.url : "";
       if (url) {
         tab.pendingNavigationUrl = url;
+        // Only clear the injection guard when navigating to a different URL,
+        // so multiple frameNavigated events for the same URL (e.g. Turbo restores,
+        // same-URL redirects) don't bypass the dedup check.
+        if (url !== tab.lastInjectedUrl) {
+          tab.lastInjectedUrl = null;
+        }
       }
       return;
     }
@@ -486,6 +492,9 @@ export class CdpConnection {
 
   /** Load site-scripts config, match URL, and inject any matching scripts. */
   private async injectSiteScripts(targetId: string, url: string): Promise<void> {
+    const tab = this.tabManager.getTab(targetId);
+    if (tab?.lastInjectedUrl === url) return;
+
     const config = loadSiteScriptsConfig();
     const rule = matchUrl(url, config);
     if (!rule) return;
@@ -494,6 +503,9 @@ export class CdpConnection {
     if (rule.reuseTab) {
       this.tabManager.bindSiteTab(rule.match, targetId);
     }
+
+    // Mark this URL as injected before running scripts
+    if (tab) tab.lastInjectedUrl = url;
 
     // Inject each script
     for (const scriptName of rule.scripts) {
