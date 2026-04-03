@@ -315,16 +315,16 @@ export class CdpConnection {
     const tab = this.tabManager.getTab(targetId);
     if (!tab) return;
 
-    // Dialog handling
+    // Dialog handling — always auto-close; use dialogHandler config if set,
+    // otherwise default to accept.
     if (method === "Page.javascriptDialogOpening") {
-      if (tab.dialogHandler) {
-        await this.sessionCommand(targetId, "Page.handleJavaScriptDialog", {
-          accept: tab.dialogHandler.accept,
-          ...(tab.dialogHandler.promptText !== undefined
-            ? { promptText: tab.dialogHandler.promptText }
-            : {}),
-        });
-      }
+      const handler = tab.dialogHandler ?? { accept: true };
+      await this.sessionCommand(targetId, "Page.handleJavaScriptDialog", {
+        accept: handler.accept,
+        ...(handler.promptText !== undefined
+          ? { promptText: handler.promptText }
+          : {}),
+      });
       return;
     }
 
@@ -526,8 +526,9 @@ export class CdpConnection {
     // Mark this URL as injected before running scripts
     if (tab) tab.lastInjectedUrl = url;
 
-    // Inject each script
+    // Inject each script with a delay between injections
     for (const scriptName of rule.scripts) {
+      // await new Promise((resolve) => setTimeout(resolve, 0));
       try {
         const script = loadUserScript(scriptName);
         const expression = `(() => { ${script} })()`;
