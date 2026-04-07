@@ -613,6 +613,7 @@ export class CdpConnection {
 
     // Enable domains
     await this.sessionCommand(targetId, "Page.enable").catch(() => {});
+    await this.sessionCommand(targetId, "Page.setBypassCSP", { enabled: true }).catch(() => {});
     await this.sessionCommand(targetId, "Runtime.enable").catch(() => {});
     await this.sessionCommand(targetId, "Network.enable").catch(() => {});
     await this.sessionCommand(targetId, "DOM.enable").catch(() => {});
